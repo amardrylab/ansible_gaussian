@@ -1,0 +1,92 @@
+---
+- name: Create an instance
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+   - name: Create a disk
+     gcp_compute_disk:
+         name: 'disk-instance'
+         size_gb: 10
+         source_image: 'projects/debian-cloud/global/images/family/debian-9'
+         zone: us-east1-b
+         project: "drylabin"
+         auth_kind: "serviceaccount"
+         service_account_file: "~/drylabin.json"
+         scopes:
+                 - https://www.googleapis.com/auth/compute
+         state: present
+     register: disk
+   - name: Create an instance
+     gcp_compute_instance:
+         name: "mygauss"
+         machine_type: "n1-standard-1"
+         disks:
+                 - auto_delete: true
+                   boot: true
+                   source: "{{ disk }}"
+         network_interfaces:
+                 - access_configs:
+                         - name: 'External NAT'
+                           type: 'ONE_TO_ONE_NAT'
+         zone: us-east1-b
+         project: "drylabin"
+         auth_kind: "serviceaccount"
+         service_account_file: "~/drylabin.json"
+         scheduling:
+                 preemptible: yes
+         state: present
+         scopes:
+                 - https://www.googleapis.com/auth/compute
+     register: instance
+
+   - name: Get address of the instance
+     set_fact:
+             address: "{{ instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+
+   - name: Print the address of the instance
+     debug:
+             var: address
+
+   - name: Wait for SSH to come up
+     wait_for: host={{ instance.networkInterfaces[0].accessConfigs[0].natIP }} port=22 delay=10 timeout=60
+
+   - name: Add host to groupname
+     add_host: hostname={{ address }} groupname=new_instances
+
+- name: Manage new instances
+  hosts: new_instances
+  become: yes
+
+  tasks:
+          - name: Update apt-cache
+            apt: update_cache=yes
+
+          - name: Installing the softwares
+            apt:
+                    pkg:
+                            - tcsh
+                    state: present
+
+          - name: Copy the Gaussian tar file
+            copy: src=IS4-111X.tgz dest=/home/pi owner=pi group=pi
+
+          - name: untar
+            unarchive:
+                    remote_src: yes
+                    src: /home/pi/IS4-111X.tgz
+                    dest: /home/pi
+                    owner: pi
+                    group: pi
+
+          - name: Creation of scratch directory
+            file: path=/home/pi/scr state=directory owner=pi group=pi
+
+          - name: Create environment variable
+            shell: echo "export g09root=/home/pi" >> /home/pi/.bashrc
+
+          - name: Initialization files
+            shell: echo "source \$g09root/g09/bsd/g09.profile" >> /home/pi/.bashrc
+
+          - name: Scratch directory
+            shell: echo "export GAUSS_SCRDIR=\$g09root/scr">> /home/pi/.bashrc
